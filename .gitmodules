@@ -1,0 +1,6 @@
+[submodule "modules/bsec/API"]
+        path = modules/bsec/API
+        url = https://github.com/BoschSensortec/BME68x-Sensor-API.git
+[submodule "micropython"]
+        path = micropython
+        url = https://github.com/micropython/micropython.git
