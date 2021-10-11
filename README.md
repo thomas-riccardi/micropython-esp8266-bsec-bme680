@@ -71,3 +71,30 @@ md5       022d3e9e5131954dc098f181cf56b3bc
 ## Use
 Follow flash doc:
 https://github.com/micropython/micropython/blob/master/ports/esp8266/README.md#build-instructions
+
+## Example
+```python
+import machine
+import time
+import bsec
+
+i2c = machine.I2C(scl=machine.Pin(5), sda=machine.Pin(4), freq=100000)
+bme680 = bsec.BME680_I2C(i2c)
+bme680.init()
+
+print(('sample_count', 'temperature', 'pressure', 'humidity', 'gas_resistance', 'status'))
+for i in range(1, 10):
+    bme680.force_measurement()
+    delay_us = bme680.get_delay_us()
+    time.sleep_us(delay_us)
+    fields =  bme680.read_data()
+    print(fields)
+```
+
+# Development
+## Generate stub micropython C module
+```shell
+pip install git+https://github.com/pazzarpj/micropython-ustubby.git
+cd modules
+python -c 'import ustubby; import bsec; print(ustubby.stub_module(bsec))'
+```
