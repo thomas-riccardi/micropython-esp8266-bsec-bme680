@@ -2,12 +2,17 @@
 #include "py/obj.h"
 #include "py/runtime.h"
 #include "py/builtin.h"
+#include "py/mphal.h"
 
 /* Use the following bme680 driver: https://github.com/BoschSensortec/BME68x-Sensor-API/blob/v4.4.6/bme68x.h */
 #include "bme68x.h"
 /* BSEC header files are available in the inc/ folder of the release package */
 #include "bsec_interface.h"
 #include "bsec_datatypes.h"
+
+
+//#define DEBUG_printf DEBUG_printf
+#define DEBUG_printf(...) (void)0
 
 
 void bme68x_check_rslt(const char api_name[], int8_t rslt)
@@ -59,6 +64,85 @@ typedef struct _bsec_BME680_I2C_obj_t {
 } bsec_BME680_I2C_obj_t;
 
 
+
+void bme68x_delay_us(uint32_t period, void *intf_ptr)
+{
+  mp_hal_delay_us(period);
+}
+
+
+BME68X_INTF_RET_TYPE bme68x_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr)
+{
+  bsec_BME680_I2C_obj_t *self = intf_ptr;
+  uint8_t dev_addr = self->address;
+
+  DEBUG_printf("i2c_read(reg_addr=%x, reg_data=%x, len=%x, intf_ptr=%x)\n", reg_addr, reg_data, len, intf_ptr);
+
+  // let's call self.i2c_obj.readfrom_mem() python method
+
+  mp_obj_t args[2 + 3]; // 2 for calling a method on i2c_obj; + 3 normal args to the method
+  mp_load_method(self->i2c_obj, MP_QSTR_readfrom_mem, args); // load 2 obj needed to call a method, on args[0] and args[1]
+  // add pass our 3 args
+  // :addr
+  args[2] = MP_OBJ_NEW_SMALL_INT(dev_addr);
+  // :memaddr
+  args[3] = MP_OBJ_NEW_SMALL_INT(reg_addr);
+  // :nbytes
+  args[4] = mp_obj_new_int_from_uint(len);
+  // finally, call
+  mp_obj_t bytes_obj = mp_call_method_n_kw(3, 0, args); // 3 args, 0 kwargs
+
+  // copy bytes_obj data to reg_data
+  mp_buffer_info_t bufinfo;
+  mp_get_buffer_raise(bytes_obj, &bufinfo, MP_BUFFER_READ);
+  memcpy(reg_data, bufinfo.buf, len < bufinfo.len ? len : bufinfo.len);
+  // TODO v2 with readfrom_mem_into, with a mp_obj_new_bytearray_by_ref(len, reg_data) passed, hopefully it just works
+
+  for (int i=0; i<(len < bufinfo.len ? len : bufinfo.len); i++) {
+    DEBUG_printf("%02x ", reg_data[i]);
+    if ((i+1)%16 == 0) DEBUG_printf("\n");
+  }
+  DEBUG_printf("\n");
+
+  // TODO error handling?
+  return 0;
+}
+
+/*!
+ * I2C write function map to COINES platform
+ */
+BME68X_INTF_RET_TYPE bme68x_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr)
+{
+  bsec_BME680_I2C_obj_t *self = intf_ptr;
+  uint8_t dev_addr = self->address;
+
+  DEBUG_printf("i2c_write(reg_addr=%x, reg_data=%x, len=%x, intf_ptr=%x)\n", reg_addr, reg_data, len, intf_ptr);
+
+  for (int i=0; i<len; i++) {
+    DEBUG_printf("%02x ", reg_data[i]);
+    if ((i+1)%16 == 0) DEBUG_printf("\n");
+  }
+  DEBUG_printf("\n");
+
+  // let's call self.i2c_obj.writeto_mem() python method
+  mp_obj_t args[2 + 3]; // 2 for calling a method on i2c_obj; + 3 normal args to the method
+  mp_load_method(self->i2c_obj, MP_QSTR_writeto_mem, args); // load 2 obj needed to call a method, on args[0] and args[1]
+  // add pass our 3 args
+  // :addr
+  args[2] = MP_OBJ_NEW_SMALL_INT(dev_addr);
+  // :memaddr
+  args[3] = MP_OBJ_NEW_SMALL_INT(reg_addr);
+  // :buf
+  args[4] = mp_obj_new_bytes(reg_data, len);
+  // finally, call
+  mp_obj_t bytes_obj = mp_call_method_n_kw(3, 0, args); // 3 args, 0 kwargs
+
+  // TODO error handling?
+  return 0;
+}
+
+
+
 // just a definition
 mp_obj_t bsec_BME680_I2C_make_new(const mp_obj_type_t *type,
                             size_t n_args,
@@ -78,12 +162,19 @@ STATIC mp_obj_t bsec_BME680_I2C_init(mp_obj_t self_in) {
   bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
   int8_t rslt;
 
+  self->bme.read = bme68x_i2c_read;
+  self->bme.write = bme68x_i2c_write;
+  self->bme.intf = BME68X_I2C_INTF;
+  self->bme.delay_us = bme68x_delay_us;
+  self->bme.intf_ptr = self;
+  self->bme.amb_temp = 25; /* The ambient temperature in deg C is used for defining the heater temperature */
+
+
   rslt = bme68x_init(&self->bme);
   bme68x_check_rslt("bme68x_init", rslt);
 
-
   self->conf.filter = BME68X_FILTER_OFF;
-  self->conf.odr = BME68X_ODR_NONE;
+  self->conf.odr = BME68X_ODR_NONE; /* This parameter defines the sleep duration after each profile */
   self->conf.os_hum = BME68X_OS_16X;
   self->conf.os_pres = BME68X_OS_1X;
   self->conf.os_temp = BME68X_OS_2X;
@@ -91,6 +182,7 @@ STATIC mp_obj_t bsec_BME680_I2C_init(mp_obj_t self_in) {
   bme68x_check_rslt("bme68x_set_conf", rslt);
 
   self->heatr_conf.enable = BME68X_ENABLE;
+  // TODO maybe use custom profile from sequential_mode.c?
   self->heatr_conf.heatr_temp = 300;
   self->heatr_conf.heatr_dur = 100;
   rslt = bme68x_set_heatr_conf(BME68X_FORCED_MODE, &self->heatr_conf, &self->bme);
