@@ -82,13 +82,14 @@ i2c = machine.I2C(scl=machine.Pin(5), sda=machine.Pin(4), freq=100000)
 bme680 = bsec.BME680_I2C(i2c)
 bme680.init()
 
-print(('sample_count', 'temperature', 'pressure', 'humidity', 'gas_resistance', 'status'))
 for i in range(1, 10):
     bme680.force_measurement()
-    delay_us = bme680.get_delay_us()
+    delay_us = bme680.get_read_data_delay_us()
     time.sleep_us(delay_us)
-    fields =  bme680.read_data()
-    print(fields)
+    data = bme680.read_data()
+    print(data)
+    delay_us = bme680.get_next_call_delay_us()
+    time.sleep_us(delay_us)
 ```
 
 # Development
