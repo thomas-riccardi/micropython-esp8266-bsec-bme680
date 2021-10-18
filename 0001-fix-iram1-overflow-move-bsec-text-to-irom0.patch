@@ -1,13 +1,15 @@
 diff --git a/ports/esp8266/boards/esp8266_common.ld b/ports/esp8266/boards/esp8266_common.ld
-index f40ff1e5f..70c44b843 100644
+index f40ff1e5f..4e07cd96c 100644
 --- a/ports/esp8266/boards/esp8266_common.ld
 +++ b/ports/esp8266/boards/esp8266_common.ld
-@@ -73,6 +73,9 @@ SECTIONS
+@@ -73,6 +73,11 @@ SECTIONS
          _irom0_text_start = ABSOLUTE(.);
          *(.irom0.literal .irom.literal .irom.text.literal .irom0.text .irom.text)
  
 +        /* avoid iram0 overflow with extra BSEC module */
 +        *bsec/*.o(.literal* .text*)
++        *libalgobsec.a:(.literal* .text*)
++        *libm.a:(.literal* .text*)
 +
          /* Vendor SDK in v2.1.0-7-gb8fd588 started to build these with
             -ffunction-sections -fdata-sections, and require routing to
