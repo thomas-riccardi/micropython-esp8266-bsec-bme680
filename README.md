@@ -47,7 +47,7 @@ cd ports/esp8266
 #esp-sdk make clean
 esp-sdk make USER_C_MODULES=../../../modules
 ```
-result:
+Result:
 ```
 Use make V=1 or set BUILD_VERBOSE in your environment to increase build verbosity.
 Including User C Module from ../../../modules/bsec
@@ -67,7 +67,8 @@ total     626608
 md5       022d3e9e5131954dc098f181cf56b3bc
 ```
 
-
+More build options:
+- append `MICROPY_BSEC_DEBUG_VERBOSE=1` to the `make` command to get debug logs of the BSEC module
 ## Use
 Follow flash doc:
 https://github.com/micropython/micropython/blob/master/ports/esp8266/README.md#build-instructions
@@ -82,13 +83,16 @@ i2c = machine.I2C(scl=machine.Pin(5), sda=machine.Pin(4), freq=100000)
 bme680 = bsec.BME680_I2C(i2c)
 bme680.init()
 
-for i in range(1, 10):
-    bme680.force_measurement()
+while True:
+    measurement_timestamp_ns = time.time_ns()
+    bme680.force_measurement(measurement_timestamp_ns)
     delay_us = bme680.get_read_data_delay_us()
     time.sleep_us(delay_us)
-    data = bme680.read_data()
+    data = bme680.read_data(measurement_timestamp_ns)
     print(data)
-    delay_us = bme680.get_next_call_delay_us()
+    next_call_timestamp_ns = bme680.get_next_call_timestamp_ns()
+    delay_us = max(next_call_timestamp_ns - time.time_ns(), 0) // 1000
+    print("sleep (in s)", delay_us/1000000)
     time.sleep_us(delay_us)
 ```
 

@@ -1,5 +1,6 @@
 // Include MicroPython API.
 #include "py/obj.h"
+#include "py/objint.h"
 #include "py/runtime.h"
 #include "py/builtin.h"
 #include "py/mphal.h"
@@ -10,9 +11,51 @@
 #include "bsec_interface.h"
 #include "bsec_datatypes.h"
 
-
-//#define DEBUG_printf DEBUG_printf
+#if MICROPY_BSEC_DEBUG_VERBOSE // print debugging info
+#define DEBUG_PRINT (1)
+#define DEBUG_printf DEBUG_printf
+#else // don't print debugging info
+#define DEBUG_PRINT (0)
 #define DEBUG_printf(...) (void)0
+#endif
+
+
+uint64_t mpz_to_64bit_int(mp_obj_int_t* arg, bool is_signed)
+{
+  //see mpz_as_int_checked
+  uint64_t maxCalcThreshold = is_signed ? 140737488355327 : 281474976710655;
+
+  mpz_t* z = &arg->mpz;
+  if( !is_signed && z->neg )
+  {
+    mp_raise_TypeError(MP_ERROR_TEXT("Source integer must be unsigned"));
+  }
+
+  size_t len = z->len;
+  uint64_t val = 0;
+
+  while( len-- > 0 )
+  {
+    if( val > maxCalcThreshold )
+    {
+      mp_raise_TypeError(MP_ERROR_TEXT("Value too large for 64bit integer"));
+    }
+    val = ( val << MPZ_DIG_SIZE ) | z->dig[len];
+  }
+
+#ifdef _MSC_VER
+#pragma warning( disable : 4146 )
+#endif
+  if( z->neg )
+  {
+    val = -val;
+  }
+#ifdef _MSC_VER
+#pragma warning( default : 4146 )
+#endif
+
+  return val;
+}
 
 
 void bme68x_check_rslt(const char api_name[], int8_t rslt)
@@ -53,7 +96,7 @@ void _bsec_check_status(const char api_name[], bsec_library_return_t status)
     if (status < BSEC_OK) {
       mp_raise_msg_varg(&mp_type_TypeError, MP_ERROR_TEXT("API name [%s]  BSEC Error [%d]"), api_name, status);
     } else {
-      DEBUG_printf("API name [%s]  BSEC Warning [%d]", api_name, status);
+      DEBUG_printf("API name [%s]  BSEC Warning [%d]\n", api_name, status);
     }
   }
 }
@@ -73,10 +116,9 @@ typedef struct _bsec_BME680_I2C_obj_t {
   struct bme68x_conf conf;
   struct bme68x_heatr_conf heatr_conf;
   struct bme68x_data data;
-  float _tempOffset;
 
   bsec_version_t version;
-  uint32_t next_call_delay_us;  // in us/microseconds
+  uint64_t next_call_timestamp_ns;
   bsec_library_return_t status;
   uint8_t nSensorSettings;
   bsec_sensor_configuration_t virtualSensors[BSEC_NUMBER_OUTPUTS], sensorSettings[BSEC_MAX_PHYSICAL_SENSOR];
@@ -122,11 +164,13 @@ BME68X_INTF_RET_TYPE bme68x_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32
   memcpy(reg_data, bufinfo.buf, len < bufinfo.len ? len : bufinfo.len);
   // TODO v2 with readfrom_mem_into, with a mp_obj_new_bytearray_by_ref(len, reg_data) passed, hopefully it just works
 
+  #if DEBUG_PRINT
   for (int i=0; i<(len < bufinfo.len ? len : bufinfo.len); i++) {
     DEBUG_printf("%02x ", reg_data[i]);
     if ((i+1)%16 == 0) DEBUG_printf("\n");
   }
   DEBUG_printf("\n");
+  #endif
 
   // TODO error handling?
   return 0;
@@ -142,11 +186,13 @@ BME68X_INTF_RET_TYPE bme68x_i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
 
   DEBUG_printf("i2c_write(reg_addr=%x, reg_data=%x, len=%x, intf_ptr=%x)\n", reg_addr, reg_data, len, intf_ptr);
 
+  #if DEBUG_PRINT
   for (int i=0; i<len; i++) {
     DEBUG_printf("%02x ", reg_data[i]);
     if ((i+1)%16 == 0) DEBUG_printf("\n");
   }
   DEBUG_printf("\n");
+  #endif
 
   // let's call self.i2c_obj.writeto_mem() python method
   mp_obj_t args[2 + 3]; // 2 for calling a method on i2c_obj; + 3 normal args to the method
@@ -250,7 +296,7 @@ STATIC mp_obj_t bsec_BME680_I2C_init(mp_obj_t self_in) {
   self->bme.intf = BME68X_I2C_INTF;
   self->bme.delay_us = bme68x_delay_us;
   self->bme.intf_ptr = self;
-  self->bme.amb_temp = self->_tempOffset; /* The ambient temperature in deg C is used for defining the heater temperature */
+  self->bme.amb_temp = 25; /* The ambient temperature in deg C is used for defining the heater temperature */
 
   rslt = bme68x_init(&self->bme);
   bme68x_check_rslt("bme68x_init", rslt);
@@ -317,17 +363,18 @@ void bsec_zero_outputs(bsec_BME680_I2C_obj_t *self)
 }
 
 
-STATIC mp_obj_t bsec_BME680_I2C_force_measurement(mp_obj_t self_in) {
+STATIC mp_obj_t bsec_BME680_I2C_force_measurement(mp_obj_t self_in, mp_obj_t current_time_ns_in) {
   bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
   int8_t rslt;
 
+  int64_t current_timestamp_ns = mpz_to_64bit_int(MP_OBJ_TO_PTR(current_time_ns_in), false);
 
   bsec_virtual_sensor_t sensorList[0];
   _bsec_update_subscription(self_in, sensorList, 0, BSEC_SAMPLE_RATE_LP);
 
   // get settings from control
-  self->status = bsec_sensor_control(0, &self->bme680Settings); // use timestamps starting at 0: sleep durations, not timestamps: easier to integrate
-  self->next_call_delay_us = self->bme680Settings.next_call / 1000; /* Convert from ns to us */
+  self->status = bsec_sensor_control(current_timestamp_ns, &self->bme680Settings);
+  self->next_call_timestamp_ns = self->bme680Settings.next_call;
 
   // apply settings
   self->conf.filter = BME68X_FILTER_OFF; // in arduino code it doesn't seem to be set, relying on default zero maybe?; still, BME680_FILTER_SEL is set, not sure why.
@@ -352,7 +399,7 @@ STATIC mp_obj_t bsec_BME680_I2C_force_measurement(mp_obj_t self_in) {
 
   return mp_const_none;
 }
-MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_force_measurement_obj, bsec_BME680_I2C_force_measurement);
+MP_DEFINE_CONST_FUN_OBJ_2(bsec_BME680_I2C_force_measurement_obj, bsec_BME680_I2C_force_measurement);
 
 
 STATIC mp_obj_t bsec_BME680_I2C_get_read_data_delay_us(mp_obj_t self_in) {
@@ -367,7 +414,7 @@ STATIC mp_obj_t bsec_BME680_I2C_get_read_data_delay_us(mp_obj_t self_in) {
 MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_get_read_data_delay_us_obj, bsec_BME680_I2C_get_read_data_delay_us);
 
 
-STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in) {
+STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in, mp_obj_t measurement_time_ns_in) {
   bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
   int8_t rslt;
   uint8_t n_fields;
@@ -398,7 +445,7 @@ STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in) {
   bsec_input_t inputs[BSEC_MAX_PHYSICAL_SENSOR]; /* Temperature, Pressure, Humidity & Gas Resistance */
   uint8_t nInputs = 0, nOutputs = 0;
 
-  int64_t currTimeNs = 0; // TODO maybe pass real timestamp from function args; in arduino port it's the timestamp just before force_measurement
+  int64_t measurement_timestamp_ns = mpz_to_64bit_int(MP_OBJ_TO_PTR(measurement_time_ns_in), false);
 
   if (self->data.status & BME68X_NEW_DATA_MSK)
   {
@@ -406,34 +453,34 @@ STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in) {
     {
       inputs[nInputs].sensor_id = BSEC_INPUT_TEMPERATURE;
       inputs[nInputs].signal = self->data.temperature;
-      inputs[nInputs].time_stamp = currTimeNs;
+      inputs[nInputs].time_stamp = measurement_timestamp_ns;
       nInputs++;
 
       /* Temperature offset from the real temperature due to external heat sources */
       inputs[nInputs].sensor_id = BSEC_INPUT_HEATSOURCE;
-      inputs[nInputs].signal = self->_tempOffset;
-      inputs[nInputs].time_stamp = currTimeNs;
+      inputs[nInputs].signal = 4.6;
+      inputs[nInputs].time_stamp = measurement_timestamp_ns;
       nInputs++;
     }
     if (self->bme680Settings.process_data & BSEC_PROCESS_HUMIDITY)
     {
       inputs[nInputs].sensor_id = BSEC_INPUT_HUMIDITY;
       inputs[nInputs].signal = self->data.humidity;
-      inputs[nInputs].time_stamp = currTimeNs;
+      inputs[nInputs].time_stamp = measurement_timestamp_ns;
       nInputs++;
     }
     if (self->bme680Settings.process_data & BSEC_PROCESS_PRESSURE)
     {
       inputs[nInputs].sensor_id = BSEC_INPUT_PRESSURE;
       inputs[nInputs].signal = self->data.pressure;
-      inputs[nInputs].time_stamp = currTimeNs;
+      inputs[nInputs].time_stamp = measurement_timestamp_ns;
       nInputs++;
     }
     if (self->bme680Settings.process_data & BSEC_PROCESS_GAS)
     {
       inputs[nInputs].sensor_id = BSEC_INPUT_GASRESISTOR;
       inputs[nInputs].signal = self->data.gas_resistance;
-      inputs[nInputs].time_stamp = currTimeNs;
+      inputs[nInputs].time_stamp = measurement_timestamp_ns;
       nInputs++;
     }
   }
@@ -459,7 +506,7 @@ STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in) {
   }
 
   // TODO expose timestamps, proper timestmap next_call instead of next_call_delay too
-  int64_t outputTimestamp = _outputs[0].time_stamp / 1000000; /* Convert from ns to ms */
+  int64_t outputTimestamp = _outputs[0].time_stamp;
 
   for (uint8_t i = 0; i < nOutputs; i++)
   {
@@ -540,23 +587,23 @@ STATIC mp_obj_t bsec_BME680_I2C_read_data(mp_obj_t self_in) {
 
   return ret_val;
 }
-MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_read_data_obj, bsec_BME680_I2C_read_data);
+MP_DEFINE_CONST_FUN_OBJ_2(bsec_BME680_I2C_read_data_obj, bsec_BME680_I2C_read_data);
 
 
 
-STATIC mp_obj_t bsec_BME680_I2C_get_next_call_delay_us(mp_obj_t self_in) {
+STATIC mp_obj_t bsec_BME680_I2C_get_next_call_timestamp_ns(mp_obj_t self_in) {
   bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-  return mp_obj_new_int(self->next_call_delay_us);
+  return mp_obj_new_int_from_ull(self->next_call_timestamp_ns);
 }
-MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_get_next_call_delay_us_obj, bsec_BME680_I2C_get_next_call_delay_us);
+MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_get_next_call_timestamp_ns_obj, bsec_BME680_I2C_get_next_call_timestamp_ns);
 
 STATIC const mp_rom_map_elem_t bsec_BME680_I2C_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&bsec_BME680_I2C_init_obj) },
     { MP_ROM_QSTR(MP_QSTR_force_measurement), MP_ROM_PTR(&bsec_BME680_I2C_force_measurement_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_read_data_delay_us), MP_ROM_PTR(&bsec_BME680_I2C_get_read_data_delay_us_obj) },
     { MP_ROM_QSTR(MP_QSTR_read_data), MP_ROM_PTR(&bsec_BME680_I2C_read_data_obj) },
-    { MP_ROM_QSTR(MP_QSTR_get_next_call_delay_us), MP_ROM_PTR(&bsec_BME680_I2C_get_next_call_delay_us_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_next_call_timestamp_ns), MP_ROM_PTR(&bsec_BME680_I2C_get_next_call_timestamp_ns_obj) },
 };
 STATIC MP_DEFINE_CONST_DICT(bsec_BME680_I2C_locals_dict, bsec_BME680_I2C_locals_dict_table);
 /* methods end */
@@ -597,13 +644,11 @@ mp_obj_t bsec_BME680_I2C_make_new(const mp_obj_type_t *type,
 
     self->sample_count = 0;
 
-    self->_tempOffset = 25;
-
     self->version.major = 0;
     self->version.minor = 0;
     self->version.major_bugfix = 0;
     self->version.minor_bugfix = 0;
-    self->next_call_delay_us = 0;
+    self->next_call_timestamp_ns = 0;
     self->status = BSEC_OK;
     self->nSensorSettings = BSEC_MAX_PHYSICAL_SENSOR;
 
