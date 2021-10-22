@@ -94,7 +94,36 @@ while True:
     delay_us = max(next_call_timestamp_ns - time.time_ns(), 0) // 1000
     print("sleep (in s)", delay_us/1000000)
     time.sleep_us(delay_us)
+
+# example:
+# {'iaq': 144.758, 'staticIaqAccuracy': 3, 'gasResistance': 171795.0, 'rawHumidity': 49.9882, 'co2Accuracy': 3, 'breathVocAccuracy': 3, 'staticIaq': 103.249, 'iaqAccuracy': 3, 'breathVocEquivalent': 1.63182, 'co2Equivalent': 1032.49, 'humidity': 65.8691, 'pressure': 100328.0, 'temperature': 24.1201, 'rawTemperature': 28.7868}
+
+# After iaqAccuracy reaches 3, i.e. calibrated
+# Save state
+calibrated_state = bme680.get_state()
+# Save to persistent memory
+state_filename = 'bsec_bme680_calibrated_state.bin'
+with open(state_filename, 'wb') as f:
+    wrote = f.write(calibrated_state)
+print('wrote', wrote, 'bytes on file', state_filename)
+
+# Load from persistent memory
+with open(state_filename, 'rb') as f:
+    calibrated_state = f.read()
+print('read', len(calibrated_state), 'bytes on file', state_filename)
+# Restore
+bme680.set_state(calibrated_state)
 ```
+
+## Calibrate the BME680 and BSEC
+(see `BSEC_1.4.8.0_Generic_Release/integration_guide/BST-BME680-Integration-Guide-AN008-48.pdf`)
+- expose the sensor once to good air (e.g. outdoor air) and bad air (e.g. box with exhaled breath) for auto-trimming.
+- wait for `accuracy` to reach `3`
+- save calibration state:
+  - connect with `screen`
+  - CTRL-C
+  - `sensors_bme680_save_state(sensor_bme680)`
+  - reset board
 
 # Development
 ## Generate stub micropython C module
