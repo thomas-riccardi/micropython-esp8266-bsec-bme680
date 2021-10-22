@@ -338,6 +338,47 @@ STATIC mp_obj_t bsec_BME680_I2C_init(mp_obj_t self_in) {
 MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_init_obj, bsec_BME680_I2C_init);
 
 
+STATIC mp_obj_t bsec_BME680_I2C_get_state(mp_obj_t self_in) {
+  bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
+
+  uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
+  uint8_t workBuffer[BSEC_MAX_STATE_BLOB_SIZE];
+  uint32_t n_serialized_state = BSEC_MAX_STATE_BLOB_SIZE;
+
+  self->status = bsec_get_state(0,
+                                bsecState,
+                                BSEC_MAX_STATE_BLOB_SIZE,
+                                workBuffer,
+                                BSEC_MAX_STATE_BLOB_SIZE,
+                                &n_serialized_state);
+  _bsec_check_status("bsec_get_state", self->status);
+
+  return mp_obj_new_bytes(bsecState, n_serialized_state);
+}
+MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_get_state_obj, bsec_BME680_I2C_get_state);
+
+STATIC mp_obj_t bsec_BME680_I2C_set_state(mp_obj_t self_in, mp_obj_t state_in) {
+  bsec_BME680_I2C_obj_t *self = MP_OBJ_TO_PTR(self_in);
+
+  mp_buffer_info_t state_buf_info;
+  mp_get_buffer_raise(state_in, &state_buf_info, MP_BUFFER_READ);
+  if (state_buf_info.len > BSEC_MAX_STATE_BLOB_SIZE) {
+    mp_raise_msg_varg(&mp_type_TypeError, MP_ERROR_TEXT("Too large BSEC state buffer lenght: max expected=%d, actual=%d"), BSEC_MAX_STATE_BLOB_SIZE, state_buf_info.len);
+  }
+
+  uint8_t workBuffer[BSEC_MAX_STATE_BLOB_SIZE];
+
+  self->status = bsec_set_state(state_buf_info.buf,
+                                state_buf_info.len,
+                                workBuffer,
+                                BSEC_MAX_STATE_BLOB_SIZE);
+  _bsec_check_status("bsec_set_state", self->status);
+
+  return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(bsec_BME680_I2C_set_state_obj, bsec_BME680_I2C_set_state);
+
+
 void bsec_zero_outputs(bsec_BME680_I2C_obj_t *self)
 {
   self->temperature = 0.0f;
@@ -600,6 +641,8 @@ MP_DEFINE_CONST_FUN_OBJ_1(bsec_BME680_I2C_get_next_call_timestamp_ns_obj, bsec_B
 
 STATIC const mp_rom_map_elem_t bsec_BME680_I2C_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&bsec_BME680_I2C_init_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_state), MP_ROM_PTR(&bsec_BME680_I2C_get_state_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_state), MP_ROM_PTR(&bsec_BME680_I2C_set_state_obj) },
     { MP_ROM_QSTR(MP_QSTR_force_measurement), MP_ROM_PTR(&bsec_BME680_I2C_force_measurement_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_read_data_delay_us), MP_ROM_PTR(&bsec_BME680_I2C_get_read_data_delay_us_obj) },
     { MP_ROM_QSTR(MP_QSTR_read_data), MP_ROM_PTR(&bsec_BME680_I2C_read_data_obj) },
