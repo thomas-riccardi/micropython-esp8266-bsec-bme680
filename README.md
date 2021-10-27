@@ -34,6 +34,8 @@ cd micropython
 esp-sdk make -C ports/esp8266 submodules
 # build micropython cross compiler (<1min)
 esp-sdk make -C mpy-cross
+# patch micropython, cf https://github.com/devbis/st7789_mpy/#overflow-of-iram1_0_seg
+git apply ../0001-fix-iram1-overflow-move-bsec-text-to-irom0.patch
 ```
 
 ### Build

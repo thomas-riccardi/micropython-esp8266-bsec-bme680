@@ -1,11 +1,23 @@
 // Include MicroPython API.
 #include "py/runtime.h"
 
+/* Use the following bme680 driver: https://github.com/BoschSensortec/BME68x-Sensor-API/blob/v4.4.6/bme68x.h */
+#include "bme68x.h"
+/* BSEC header files are available in the inc/ folder of the release package */
+#include "bsec_interface.h"
+#include "bsec_datatypes.h"
+
+
 // This is the function which will be called from Python as cbsec.add_ints(a, b).
 STATIC mp_obj_t bsec_add_ints(mp_obj_t a_obj, mp_obj_t b_obj) {
     // Extract the ints from the micropython input objects.
     int a = mp_obj_get_int(a_obj);
     int b = mp_obj_get_int(b_obj);
+
+    struct bme68x_dev bme;
+    int8_t rslt;
+    rslt = bme68x_init(&bme);
+
 
     // Calculate the addition and convert to MicroPython object.
     return mp_obj_new_int(a + b);
